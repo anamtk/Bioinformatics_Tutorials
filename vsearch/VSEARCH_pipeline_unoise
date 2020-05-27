@@ -1,0 +1,120 @@
+#!/bin/sh
+
+THREADS=1
+VSEARCH=vsearch
+PERL=perl
+
+for f in *_R1_*.fastq; do
+
+r=$(sed -e "s/_R1_/_R2_/" <<< "$f")
+s=$(cut -d_ -f1 <<< "$f")
+
+echo
+
+echo =================
+echo Processing sample $s
+echo =================
+
+$VSEARCH --fastq_mergepairs $f \
+--threads $THREADS \
+--reverse $r \
+--fastq_minmergelen 100 \
+--relabel @ \
+--fastqout $s.merged.fastq
+
+echo
+echo Calculate quality statistics
+
+$VSEARCH --fastq_eestats $s.merged.fastq \
+--output $s.stats
+echo
+echo Quality filtering and remove primers
+
+$VSEARCH --fastq_filter $s.merged.fastq \
+--fastq_maxee 1.0 \
+--fastq_stripleft 26 \
+--fastq_stripright 26 \
+--fastaout $s.filtered.fasta \
+--fasta_width 0
+echo
+echo Dereplicate at sample level and relabel with sample_n
+
+$VSEARCH --derep_fulllength $s.filtered.fasta \
+--strand plus \
+--output $s.derep.fasta \
+--sizeout \
+--uc $s.derep.uc \
+--relabel $s. \
+--fasta_width 0
+
+done
+
+echo
+echo Sum of unique sequences in each sample: $(cat *.derep.fasta | grep -c "^>")
+
+echo
+echo ==================
+echo Processing all samples together
+echo ==================
+
+echo
+echo Merge all samples
+
+rm -f all.derep.fasta all.nonchimeras.derep.fasta
+cat *.derep.fasta > all.fasta
+
+echo
+echo Dereplicate across samples, I kept singletons
+
+$VSEARCH --derep_fulllength all.fasta \
+--sizein \
+--sizeout \
+--fasta_width 0 \
+--uc all.derep.uc \
+--output all.derep.fasta
+
+echo Unique sequences including singletons: $(grep -c "^>" all.derep.fasta)
+
+echo
+echo UNOISE clustering
+
+$VSEARCH --cluster_unoise all.derep.fasta \
+--sizein \
+--sizeout \
+--fasta_width 0 \
+--uc all.zotu.uc \
+--centroids zotus_chim.fasta
+
+echo Unique sequences after ZOTU clustering: $(grep -c "^>" zotus_chim.fasta)
+echo
+echo Sort by size before chimera detection
+
+$VSEARCH --sortbysize zotus_chim.fasta \
+--threads $THREADS \
+--sizein \
+--sizeout \
+--fasta_width 0 \
+--minsize 1 \
+--output zotus_sorted.fasta
+
+echo
+echo De Novo chimera detection
+
+$VSEARCH --uchime3_denovo zotus_sorted.fasta \
+--threads $THREADS \
+--sizein \
+--sizeout \
+--fasta_width 0 \
+--nonchimeras zotus.fasta 
+
+$VSEARCH --usearch_global all.fasta \
+--db zotus.fasta \
+--id 0.99 \
+--iddef 1 \
+--otutabout ASV_counts.txt
+
+echo Unique sequences after de novo chimera detection: $(grep -c "^>" zotus.fasta)
+
+echo Done
+
+date

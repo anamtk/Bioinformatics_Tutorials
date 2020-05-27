@@ -1,0 +1,141 @@
+#!/bin/sh
+
+THREADS=1
+VSEARCH=vsearch
+PERL=perl
+
+for f in *_R1_*.fastq; do
+
+r=$(sed -e "s/_R1_/_R2_/" <<< "$f")
+s=$(cut -d_ -f1 <<< "$f")
+
+echo
+
+echo =================
+echo Processing sample $s
+echo =================
+
+$VSEARCH --fastq_mergepairs $f \
+--threads $THREADS \
+--reverse $r \
+--fastq_minmergelen 100 \
+--relabel @ \
+--fastqout $s.merged.fastq
+
+echo
+echo Calculate quality statistics
+
+$VSEARCH --fastq_eestats $s.merged.fastq \
+--output $s.stats
+echo
+echo Quality filtering and remove primers
+
+$VSEARCH --fastq_filter $s.merged.fastq \
+--fastq_maxee 1.0 \
+--fastq_stripleft 26 \
+--fastq_stripright 26 \
+--fastaout $s.filtered.fasta \
+--fasta_width 0
+echo
+echo Dereplicate at sample level and relabel with sample_n
+
+$VSEARCH --derep_fulllength $s.filtered.fasta \
+--strand plus \
+--output $s.derep.fasta \
+--sizeout \
+--uc $s.derep.uc \
+--relabel $s. \
+--fasta_width 0
+
+done
+
+echo
+echo Sum of unique sequences in each sample: $(cat *.derep.fasta | grep -c "^>")
+
+echo
+echo ==================
+echo Processing all samples together
+echo ==================
+
+echo
+echo Merge all samples
+
+rm -f all.derep.fasta all.nonchimeras.derep.fasta
+cat *.derep.fasta > all.fasta
+
+echo
+echo Dereplicate across samples, I kept singletons
+
+$VSEARCH --derep_fulllength all.fasta \
+--sizein \
+--sizeout \
+--fasta_width 0 \
+--uc all.derep.uc \
+--output all.derep.fasta
+
+echo Unique sequences including singletons: $(grep -c "^>" all.derep.fasta)
+
+echo
+echo Precluster at 98% before chimera detection
+
+$VSEARCH --cluster_size all.derep.fasta \
+--threads $THREADS \
+--id 0.98 \
+--strand plus \
+--sizein \
+--sizeout \
+--fasta_width 0 \
+--uc all.preclustered.uc \
+--centroids all.preclustered.fasta
+
+echo Unique sequences after preclustering: $(grep -c "^>" all.preclustered.fasta)
+
+echo
+echo De novo chimera detection
+
+$VSEARCH --uchime_denovo all.preclustered.fasta \
+--sizein \
+--sizeout \
+--fasta_width 0 \
+--nonchimeras all.denovo.nonchimeras.fasta \
+
+echo Unique sequences after de novo chimera detection: $(grep -c "^>" all.denovo.nonchimeras.fasta)
+
+echo
+echo Extract all non-chimeric sequences, dereplicated
+
+
+$PERL map.pl all.derep.fasta all.preclustered.uc all.denovo.nonchimeras.fasta > all.nonchimeras.derep.fasta
+
+echo Unique non-chimeric sequences: $(grep -c "^>" all.nonchimeras.derep.fasta)
+
+echo
+echo Extract all non-chimeric sequences in each sample
+
+
+$PERL map.pl all.fasta all.derep.uc all.nonchimeras.derep.fasta > all.nonchimeras.fasta
+
+echo Sum of unique non-chimeric sequences in each sample: $(grep -c "^>" all.nonchimeras.fasta)
+
+echo
+echo Cluster at 97% and relabel with OTU_n, generate OTU table
+
+$VSEARCH --cluster_size all.nonchimeras.fasta \
+--threads $THREADS \
+--id 0.97 \
+--strand plus \
+--sizein \
+--sizeout \
+--fasta_width 0 \
+--uc all.clustered.uc \
+--relabel OTU_ \
+--centroids all.otus.fasta \
+--otutabout all.otutab.txt
+
+echo
+echo Number of OTUs: $(grep -c "^>" all.otus.fasta)
+
+echo
+echo Done
+
+date
